@@ -145,6 +145,7 @@ public class ApplicationContext extends Application implements AppForegroundObse
   public void onCreate() {
     Tracer.getInstance().start("Application#onCreate()");
     AppStartup.getInstance().onApplicationCreate();
+    registerActivityLifecycleCallbacks(new ActivityCallback(this));
     SignalLocalMetrics.ColdStart.start();
 
     long startTime = System.currentTimeMillis();
