@@ -19,6 +19,7 @@ import org.greenrobot.eventbus.EventBus;
 import org.signal.core.util.PendingIntentFlags;
 import org.signal.core.util.logging.Log;
 import org.signal.libsignal.zkgroup.profiles.ProfileKey;
+import org.thoughtcrime.securesms.BuildConfig;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.backup.proto.SharedPreference;
 import org.thoughtcrime.securesms.crypto.ProfileKeyUtil;
@@ -390,13 +391,11 @@ public class TextSecurePreferences {
 
     if (previous != value) {
       Recipient.self().live().refresh();
+
       if (value) {
         notifyUnregisteredReceived(context);
+        clearLocalCredentials(context);
       }
-    }
-
-    if (value) {
-      clearLocalCredentials(context);
     }
   }
 
@@ -422,15 +421,6 @@ public class TextSecurePreferences {
 
   public static void setTypingIndicatorsEnabled(Context context, boolean enabled) {
     setBooleanPreference(context, TYPING_INDICATORS, enabled);
-  }
-
-  /**
-   * Only kept so that we can avoid showing the megaphone for the new link previews setting
-   * ({@link SettingsValues#isLinkPreviewsEnabled()}) when users upgrade. This can be removed after
-   * we stop showing the link previews megaphone.
-   */
-  public static boolean wereLinkPreviewsEnabled(Context context) {
-    return getBooleanPreference(context, LINK_PREVIEWS, true);
   }
 
   public static int getNotificationPriority(Context context) {
@@ -573,7 +563,7 @@ public class TextSecurePreferences {
   }
 
   public static int getLastVersionCode(Context context) {
-    return getIntegerPreference(context, LAST_VERSION_CODE_PREF, Util.getCanonicalVersionCode());
+    return getIntegerPreference(context, LAST_VERSION_CODE_PREF, BuildConfig.VERSION_CODE);
   }
 
   public static void setLastVersionCode(Context context, int versionCode) {
@@ -895,7 +885,6 @@ public class TextSecurePreferences {
   }
 
   private static void clearLocalCredentials(Context context) {
-
     ProfileKey newProfileKey = ProfileKeyUtil.createNew();
     Recipient  self          = Recipient.self();
     SignalDatabase.recipients().setProfileKey(self.getId(), newProfileKey);

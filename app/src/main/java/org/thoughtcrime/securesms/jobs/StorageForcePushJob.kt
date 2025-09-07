@@ -1,13 +1,18 @@
 package org.thoughtcrime.securesms.jobs
 
+import org.signal.core.util.SqlUtil
 import org.signal.core.util.logging.Log
 import org.signal.core.util.logging.logI
+import org.thoughtcrime.securesms.components.settings.app.chats.folders.ChatFolderId
+import org.thoughtcrime.securesms.database.ChatFolderTables.ChatFolderTable
+import org.thoughtcrime.securesms.database.NotificationProfileTables
 import org.thoughtcrime.securesms.database.RecipientTable
 import org.thoughtcrime.securesms.database.SignalDatabase
 import org.thoughtcrime.securesms.dependencies.AppDependencies
 import org.thoughtcrime.securesms.jobmanager.Job
 import org.thoughtcrime.securesms.jobmanager.impl.NetworkConstraint
 import org.thoughtcrime.securesms.keyvalue.SignalStore
+import org.thoughtcrime.securesms.notifications.profiles.NotificationProfileId
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.recipients.RecipientId
 import org.thoughtcrime.securesms.storage.StorageSyncHelper
@@ -95,13 +100,32 @@ class StorageForcePushJob private constructor(parameters: Parameters) : BaseJob(
     inserts.add(accountRecord)
     allNewStorageIds.add(accountRecord.id)
 
-    val recordIkm: RecordIkm? = if (Recipient.self().storageServiceEncryptionV2Capability.isSupported) {
-      Log.i(TAG, "Generating and including a new recordIkm.")
-      RecordIkm.generate()
-    } else {
-      Log.i(TAG, "SSRE2 not yet supported. Not including recordIkm.")
-      null
-    }
+    val oldChatFolderStorageIds = SignalDatabase.chatFolders.getStorageSyncIdsMap()
+    val newChatFolderStorageIds = generateChatFolderStorageIds(oldChatFolderStorageIds)
+    val newChatFolderInserts: List<SignalStorageRecord> = oldChatFolderStorageIds.keys
+      .mapNotNull {
+        val query = SqlUtil.buildQuery("${ChatFolderTable.CHAT_FOLDER_ID} = ?", it)
+        SignalDatabase.chatFolders.getChatFolder(query)
+      }
+      .map { record -> StorageSyncModels.localToRemoteRecord(record, newChatFolderStorageIds[record.chatFolderId]!!.raw) }
+
+    inserts.addAll(newChatFolderInserts)
+    allNewStorageIds.addAll(newChatFolderStorageIds.values)
+
+    val oldNotificationProfileStorageIds = SignalDatabase.notificationProfiles.getStorageSyncIdsMap()
+    val newNotificationProfileStorageIds = generateNotificationProfileStorageIds(oldNotificationProfileStorageIds)
+    val newNotificationProfileInserts: List<SignalStorageRecord> = oldNotificationProfileStorageIds.keys
+      .mapNotNull {
+        val query = SqlUtil.buildQuery("${NotificationProfileTables.NotificationProfileTable.NOTIFICATION_PROFILE_ID} = ?", it)
+        SignalDatabase.notificationProfiles.getProfile(query)
+      }
+      .map { record -> StorageSyncModels.localToRemoteRecord(record, newNotificationProfileStorageIds[record.notificationProfileId]!!.raw) }
+
+    inserts.addAll(newNotificationProfileInserts)
+    allNewStorageIds.addAll(newNotificationProfileStorageIds.values)
+
+    Log.i(TAG, "Generating and including a new recordIkm.")
+    val recordIkm: RecordIkm = RecordIkm.generate()
 
     val manifest = SignalStorageManifest(newVersion, SignalStore.account.deviceId, recordIkm, allNewStorageIds)
     StorageSyncValidations.validateForcePush(manifest, inserts, Recipient.self().fresh())
@@ -135,6 +159,8 @@ class StorageForcePushJob private constructor(parameters: Parameters) : BaseJob(
     SignalStore.svr.masterKeyForInitialDataRestore = null
     SignalDatabase.recipients.applyStorageIdUpdates(newContactStorageIds)
     SignalDatabase.recipients.applyStorageIdUpdates(Collections.singletonMap(Recipient.self().id, accountRecord.id))
+    SignalDatabase.chatFolders.applyStorageIdUpdates(newChatFolderStorageIds)
+    SignalDatabase.notificationProfiles.applyStorageIdUpdates(newNotificationProfileStorageIds)
     SignalDatabase.unknownStorageIds.deleteAll()
   }
 
@@ -152,6 +178,22 @@ class StorageForcePushJob private constructor(parameters: Parameters) : BaseJob(
     }
 
     return out
+  }
+
+  private fun generateChatFolderStorageIds(oldKeys: Map<ChatFolderId, StorageId>): Map<ChatFolderId, StorageId> {
+    val out: MutableMap<ChatFolderId, StorageId> = mutableMapOf()
+
+    for ((key, value) in oldKeys) {
+      out[key] = value.withNewBytes(StorageSyncHelper.generateKey())
+    }
+
+    return out
+  }
+
+  private fun generateNotificationProfileStorageIds(oldKeys: Map<NotificationProfileId, StorageId>): Map<NotificationProfileId, StorageId> {
+    return oldKeys.mapValues { (_, value) ->
+      value.withNewBytes(StorageSyncHelper.generateKey())
+    }
   }
 
   class Factory : Job.Factory<StorageForcePushJob?> {

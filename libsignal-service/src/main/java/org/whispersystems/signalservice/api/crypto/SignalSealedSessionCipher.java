@@ -1,7 +1,5 @@
 package org.whispersystems.signalservice.api.crypto;
 
-import org.signal.libsignal.internal.Native;
-import org.signal.libsignal.internal.NativeHandleGuard;
 import org.signal.libsignal.metadata.InvalidMetadataMessageException;
 import org.signal.libsignal.metadata.InvalidMetadataVersionException;
 import org.signal.libsignal.metadata.ProtocolDuplicateMessageException;
@@ -21,6 +19,7 @@ import org.signal.libsignal.protocol.InvalidRegistrationIdException;
 import org.signal.libsignal.protocol.NoSessionException;
 import org.signal.libsignal.protocol.SignalProtocolAddress;
 import org.signal.libsignal.protocol.UntrustedIdentityException;
+import org.signal.libsignal.protocol.UsePqRatchet;
 import org.signal.libsignal.protocol.state.SessionRecord;
 import org.signal.libsignal.protocol.state.SignalProtocolStore;
 import org.whispersystems.signalservice.api.SignalSessionLock;
@@ -67,7 +66,7 @@ public class SignalSealedSessionCipher {
 
   public SealedSessionCipher.DecryptionResult decrypt(CertificateValidator validator, byte[] ciphertext, long timestamp) throws InvalidMetadataMessageException, InvalidMetadataVersionException, ProtocolInvalidMessageException, ProtocolInvalidKeyException, ProtocolNoSessionException, ProtocolLegacyMessageException, ProtocolInvalidVersionException, ProtocolDuplicateMessageException, ProtocolInvalidKeyIdException, ProtocolUntrustedIdentityException, SelfSendException {
     try (SignalSessionLock.Lock unused = lock.acquire()) {
-      return cipher.decrypt(validator, ciphertext, timestamp);
+      return cipher.decrypt(validator, ciphertext, timestamp, UsePqRatchet.NO);
     }
   }
 

@@ -3,12 +3,8 @@ package org.thoughtcrime.securesms.webrtc.locks;
 import android.content.Context;
 import android.net.wifi.WifiManager;
 import android.os.PowerManager;
-import android.provider.Settings;
-
-import androidx.annotation.NonNull;
 
 import org.signal.core.util.logging.Log;
-import org.thoughtcrime.securesms.components.sensors.Orientation;
 
 /**
  * Maintains wake lock state.
@@ -19,15 +15,11 @@ public class LockManager {
 
   private static final String TAG = Log.tag(LockManager.class);
 
-  private final PowerManager.WakeLock        fullLock;
-  private final PowerManager.WakeLock        partialLock;
-  private final WifiManager.WifiLock         wifiLock;
-  private final ProximityLock                proximityLock;
-  private final boolean                      wifiLockEnforced;
+  private final PowerManager.WakeLock fullLock;
+  private final PowerManager.WakeLock partialLock;
+  private final WifiManager.WifiLock  wifiLock;
+  private final ProximityLock         proximityLock;
 
-
-  private PhoneState  phoneState        = PhoneState.IDLE;
-  private Orientation orientation       = Orientation.PORTRAIT_BOTTOM_EDGE;
   private boolean     proximityDisabled = false;
 
   public enum PhoneState {
@@ -58,41 +50,17 @@ public class LockManager {
     fullLock.setReferenceCounted(false);
     partialLock.setReferenceCounted(false);
     wifiLock.setReferenceCounted(false);
-
-    wifiLockEnforced = isWifiPowerActiveModeEnabled(context);
-  }
-
-  private boolean isWifiPowerActiveModeEnabled(Context context) {
-    int wifi_pwr_active_mode = Settings.Secure.getInt(context.getContentResolver(), "wifi_pwr_active_mode", -1);
-    Log.d(TAG, "Wifi Activity Policy: " + wifi_pwr_active_mode);
-
-    if (wifi_pwr_active_mode == 0) {
-      return false;
-    }
-
-    return true;
   }
 
   private void updateInCallLockState() {
-    if (orientation == Orientation.PORTRAIT_BOTTOM_EDGE && wifiLockEnforced && !proximityDisabled) {
+    if (!proximityDisabled) {
       setLockState(LockState.PROXIMITY);
     } else {
       setLockState(LockState.FULL);
     }
   }
 
-  public void updateOrientation(@NonNull Orientation orientation) {
-    Log.d(TAG, "Update orientation: " + orientation);
-    this.orientation = orientation;
-
-    if (phoneState == PhoneState.IN_CALL || phoneState == PhoneState.IN_VIDEO) {
-      updateInCallLockState();
-    }
-  }
-
   public void updatePhoneState(PhoneState state) {
-    this.phoneState = state;
-
     switch(state) {
       case IDLE:
         setLockState(LockState.SLEEP);

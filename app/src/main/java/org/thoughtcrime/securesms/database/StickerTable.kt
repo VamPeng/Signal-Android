@@ -2,6 +2,7 @@ package org.thoughtcrime.securesms.database
 
 import android.content.Context
 import android.database.Cursor
+import androidx.core.content.contentValuesOf
 import org.greenrobot.eventbus.EventBus
 import org.signal.core.util.StreamUtil
 import org.signal.core.util.delete
@@ -27,9 +28,10 @@ import org.thoughtcrime.securesms.crypto.AttachmentSecret
 import org.thoughtcrime.securesms.crypto.ModernDecryptingPartInputStream
 import org.thoughtcrime.securesms.crypto.ModernEncryptingPartOutputStream
 import org.thoughtcrime.securesms.database.model.IncomingSticker
+import org.thoughtcrime.securesms.database.model.StickerPackId
 import org.thoughtcrime.securesms.database.model.StickerPackRecord
 import org.thoughtcrime.securesms.database.model.StickerRecord
-import org.thoughtcrime.securesms.mms.DecryptableStreamUriLoader.DecryptableUri
+import org.thoughtcrime.securesms.mms.DecryptableUri
 import org.thoughtcrime.securesms.stickers.BlessedPacks
 import org.thoughtcrime.securesms.stickers.StickerPackInstallEvent
 import org.thoughtcrime.securesms.util.MediaUtil
@@ -97,23 +99,37 @@ class StickerTable(
   fun insertSticker(sticker: IncomingSticker, dataStream: InputStream, notify: Boolean) {
     val fileInfo: FileInfo = saveStickerImage(dataStream)
 
-    writableDatabase
-      .insertInto(TABLE_NAME)
-      .values(
-        PACK_ID to sticker.packId,
-        PACK_KEY to sticker.packKey,
-        PACK_TITLE to sticker.packTitle,
-        PACK_AUTHOR to sticker.packAuthor,
-        STICKER_ID to sticker.stickerId,
-        EMOJI to sticker.emoji,
-        CONTENT_TYPE to sticker.contentType,
-        COVER to if (sticker.isCover) 1 else 0,
-        INSTALLED to if (sticker.isInstalled) 1 else 0,
-        FILE_PATH to fileInfo.file.absolutePath,
-        FILE_LENGTH to fileInfo.length,
-        FILE_RANDOM to fileInfo.random
-      )
-      .run(SQLiteDatabase.CONFLICT_REPLACE)
+    val values = contentValuesOf(
+      PACK_ID to sticker.packId,
+      PACK_KEY to sticker.packKey,
+      PACK_TITLE to sticker.packTitle,
+      PACK_AUTHOR to sticker.packAuthor,
+      STICKER_ID to sticker.stickerId,
+      EMOJI to sticker.emoji,
+      CONTENT_TYPE to sticker.contentType,
+      COVER to if (sticker.isCover) 1 else 0,
+      INSTALLED to if (sticker.isInstalled) 1 else 0,
+      FILE_PATH to fileInfo.file.absolutePath,
+      FILE_LENGTH to fileInfo.length,
+      FILE_RANDOM to fileInfo.random
+    )
+
+    var updated = false
+    if (sticker.isCover) {
+      // Archive restore inserts cover rows without a sticker id, try to update first on a reduced uniqueness constraint
+      updated = writableDatabase
+        .update(TABLE_NAME)
+        .values(values)
+        .where("$PACK_ID = ? AND $COVER = 1", sticker.packId)
+        .run() > 0
+    }
+
+    if (!updated) {
+      writableDatabase
+        .insertInto(TABLE_NAME)
+        .values(values)
+        .run(SQLiteDatabase.CONFLICT_REPLACE)
+    }
 
     notifyStickerListeners()
 
@@ -252,10 +268,10 @@ class StickerTable(
     notifyStickerPackListeners()
   }
 
-  fun markPackAsInstalled(packKey: String, notify: Boolean) {
+  fun markPackAsInstalled(packId: String, notify: Boolean) {
     updatePackInstalled(
       db = databaseHelper.signalWritableDatabase,
-      packId = packKey,
+      packId = packId,
       installed = true,
       notify = notify
     )
@@ -296,16 +312,22 @@ class StickerTable(
   }
 
   fun uninstallPack(packId: String) {
+    uninstallPacks(setOf(StickerPackId(packId)))
+  }
+
+  fun uninstallPacks(packIds: Set<StickerPackId>) {
     writableDatabase.withinTransaction { db ->
-      updatePackInstalled(db = db, packId = packId, installed = false, notify = false)
-      deleteStickersInPackExceptCover(db, packId)
+      packIds.forEach { packId ->
+        updatePackInstalled(db = db, packId = packId.value, installed = false, notify = false)
+        deleteStickersInPackExceptCover(db, packId.value)
+      }
     }
 
     notifyStickerPackListeners()
     notifyStickerListeners()
   }
 
-  fun updatePackOrder(packsInOrder: MutableList<StickerPackRecord>) {
+  fun updatePackOrder(packsInOrder: List<StickerPackRecord>) {
     writableDatabase.withinTransaction { db ->
       for ((i, pack) in packsInOrder.withIndex()) {
         db.update(TABLE_NAME)
@@ -447,7 +469,7 @@ class StickerTable(
     }
   }
 
-  class StickerPackRecordReader(private val cursor: Cursor) : Closeable {
+  class StickerPackRecordReader(private val cursor: Cursor) : Closeable, Iterable<StickerPackRecord> {
 
     fun getNext(): StickerPackRecord? {
       if (!cursor.moveToNext()) {
@@ -470,8 +492,28 @@ class StickerTable(
       )
     }
 
+    fun asSequence(): Sequence<StickerPackRecord> = sequence {
+      while (getNext() != null) {
+        yield(getCurrent())
+      }
+    }
+
     override fun close() {
       cursor.close()
+    }
+
+    override fun iterator(): Iterator<StickerPackRecord> {
+      return ReaderIterator()
+    }
+
+    private inner class ReaderIterator : Iterator<StickerPackRecord> {
+      override fun hasNext(): Boolean {
+        return cursor.count != 0 && !cursor.isLast
+      }
+
+      override fun next(): StickerPackRecord {
+        return getNext() ?: throw NoSuchElementException()
+      }
     }
   }
 }

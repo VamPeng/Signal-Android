@@ -107,8 +107,8 @@ public class RefreshOwnProfileJob extends BaseJob {
       return;
     }
 
-    if (SignalStore.svr().hasOptedInWithAccess() && !SignalStore.svr().hasOptedOut() && SignalStore.storageService().getLastSyncTime() == 0) {
-      Log.i(TAG, "Registered with PIN but haven't completed storage sync yet.");
+    if ((SignalStore.svr().hasPin() || SignalStore.account().restoredAccountEntropyPool()) && !SignalStore.svr().hasOptedOut() && SignalStore.storageService().getLastSyncTime() == 0) {
+      Log.i(TAG, "Registered with PIN or AEP but haven't completed storage sync yet.");
       return;
     }
 
@@ -221,12 +221,6 @@ public class RefreshOwnProfileJob extends BaseJob {
     Recipient selfSnapshot = Recipient.self();
 
     SignalDatabase.recipients().setCapabilities(Recipient.self().getId(), capabilities);
-
-    if (selfSnapshot.getStorageServiceEncryptionV2Capability() == Recipient.Capability.NOT_SUPPORTED && capabilities.isStorageServiceEncryptionV2()) {
-      Log.i(TAG, "Transitioned to storageServiceEncryptionV2 capable. Notifying other devices and pushing to storage service with a recordIkm.");
-      AppDependencies.getJobManager().add(new MultiDeviceProfileContentUpdateJob());
-      AppDependencies.getJobManager().add(new StorageForcePushJob());
-    }
   }
 
   private void ensureUnidentifiedAccessCorrect(@Nullable String unidentifiedAccessVerifier, boolean universalUnidentifiedAccess) {
@@ -293,7 +287,7 @@ public class RefreshOwnProfileJob extends BaseJob {
 
   private void syncWithStorageServiceThenUploadProfile() {
     AppDependencies.getJobManager()
-                   .startChain(new StorageSyncJob())
+                   .startChain(StorageSyncJob.forRemoteChange())
                    .then(new ProfileUploadJob())
                    .enqueue();
   }

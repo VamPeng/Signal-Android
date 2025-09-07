@@ -97,8 +97,7 @@ object ContactDiscoveryRefreshV2 {
       serviceIds = SignalDatabase.recipients.getAllServiceIdProfileKeyPairs(),
       token = Optional.empty(),
       timeoutMs = 10_000,
-      libsignalNetwork = AppDependencies.libsignalNetwork,
-      useLibsignalRouteBasedCDSIConnectionLogic = RemoteConfig.libsignalRouteBasedCDSILookup
+      libsignalNetwork = AppDependencies.libsignalNetwork
     ) {
       Log.i(TAG, "Ignoring token for one-off lookup.")
     }
@@ -123,7 +122,7 @@ object ContactDiscoveryRefreshV2 {
       }
 
       is NetworkResult.NetworkError -> throw result.exception
-      is NetworkResult.ApplicationError -> throw RuntimeException("Unexpected exception", result.throwable)
+      is NetworkResult.ApplicationError -> throw result.throwable
     }
 
     return response.results[e164]?.let { item ->
@@ -176,8 +175,7 @@ object ContactDiscoveryRefreshV2 {
       serviceIds = SignalDatabase.recipients.getAllServiceIdProfileKeyPairs(),
       token = Optional.ofNullable(token),
       timeoutMs = timeoutMs,
-      libsignalNetwork = AppDependencies.libsignalNetwork,
-      useLibsignalRouteBasedCDSIConnectionLogic = RemoteConfig.libsignalRouteBasedCDSILookup
+      libsignalNetwork = AppDependencies.libsignalNetwork
     ) { tokenToSave ->
       stopwatch.split("network-pre-token")
       if (!isPartialRefresh) {
@@ -213,7 +211,7 @@ object ContactDiscoveryRefreshV2 {
       }
 
       is NetworkResult.NetworkError -> throw result.exception
-      is NetworkResult.ApplicationError -> throw RuntimeException("Unexpected exception", result.throwable)
+      is NetworkResult.ApplicationError -> throw result.throwable
     }
 
     if (!isPartialRefresh && SignalStore.misc.isCdsBlocked) {

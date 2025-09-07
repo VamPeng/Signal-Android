@@ -45,7 +45,14 @@ object FcmFetchManager {
 
   private val KEEP_ALIVE_TOKEN = "FcmFetch"
 
-  val WEBSOCKET_DRAIN_TIMEOUT = 5.minutes.inWholeMilliseconds
+  val WEBSOCKET_DRAIN_TIMEOUT: Long
+    get() {
+      return if (AppDependencies.signalServiceNetworkAccess.isCensored()) {
+        2.minutes.inWholeMilliseconds
+      } else {
+        5.minutes.inWholeMilliseconds
+      }
+    }
 
   @Volatile
   private var activeCount = 0
@@ -91,7 +98,8 @@ object FcmFetchManager {
       .notify(NotificationIds.MAY_HAVE_MESSAGES_NOTIFICATION_ID, mayHaveMessagesNotification)
   }
 
-  private fun cancelMayHaveMessagesNotification(context: Context) {
+  @JvmStatic
+  fun cancelMayHaveMessagesNotification(context: Context) {
     NotificationManagerCompat.from(context).cancel(NotificationIds.MAY_HAVE_MESSAGES_NOTIFICATION_ID)
   }
 

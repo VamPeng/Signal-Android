@@ -14,9 +14,9 @@ import org.signal.core.util.toOptional
 import org.signal.libsignal.zkgroup.groups.GroupSecretParams
 import org.signal.libsignal.zkgroup.receipts.ReceiptCredentialPresentation
 import org.thoughtcrime.securesms.attachments.Attachment
+import org.thoughtcrime.securesms.attachments.LocalStickerAttachment
 import org.thoughtcrime.securesms.attachments.PointerAttachment
 import org.thoughtcrime.securesms.attachments.TombstoneAttachment
-import org.thoughtcrime.securesms.attachments.UriAttachment
 import org.thoughtcrime.securesms.calls.links.CallLinks
 import org.thoughtcrime.securesms.components.emoji.EmojiUtil
 import org.thoughtcrime.securesms.contactshare.Contact
@@ -57,6 +57,7 @@ import org.thoughtcrime.securesms.jobs.PushProcessMessageJob
 import org.thoughtcrime.securesms.jobs.RefreshAttributesJob
 import org.thoughtcrime.securesms.jobs.RetrieveProfileJob
 import org.thoughtcrime.securesms.jobs.SendDeliveryReceiptJob
+import org.thoughtcrime.securesms.jobs.StorageSyncJob
 import org.thoughtcrime.securesms.jobs.TrimThreadJob
 import org.thoughtcrime.securesms.jobs.protos.GroupCallPeekJobData
 import org.thoughtcrime.securesms.keyvalue.SignalStore
@@ -81,14 +82,12 @@ import org.thoughtcrime.securesms.messages.SignalServiceProtoUtil.toPointersWith
 import org.thoughtcrime.securesms.mms.IncomingMessage
 import org.thoughtcrime.securesms.mms.MmsException
 import org.thoughtcrime.securesms.mms.QuoteModel
-import org.thoughtcrime.securesms.mms.StickerSlide
 import org.thoughtcrime.securesms.notifications.v2.ConversationId
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.recipients.Recipient.HiddenState
 import org.thoughtcrime.securesms.recipients.RecipientId
 import org.thoughtcrime.securesms.recipients.RecipientUtil
 import org.thoughtcrime.securesms.stickers.StickerLocator
-import org.thoughtcrime.securesms.storage.StorageSyncHelper
 import org.thoughtcrime.securesms.util.EarlyMessageCacheEntry
 import org.thoughtcrime.securesms.util.LinkUtil
 import org.thoughtcrime.securesms.util.MediaUtil
@@ -108,7 +107,6 @@ import org.whispersystems.signalservice.internal.push.DataMessage
 import org.whispersystems.signalservice.internal.push.Envelope
 import org.whispersystems.signalservice.internal.push.GroupContextV2
 import org.whispersystems.signalservice.internal.push.Preview
-import java.security.SecureRandom
 import java.util.Optional
 import java.util.UUID
 import kotlin.time.Duration
@@ -173,6 +171,9 @@ object DataMessageProcessor {
     }
 
     messageId = messageId ?: insertResult?.messageId?.let { MessageId(it) }
+    if (messageId != null) {
+      log(envelope.timestamp!!, "Inserted as messageId $messageId")
+    }
 
     if (groupId != null) {
       val unknownGroup = when (groupProcessResult) {
@@ -244,7 +245,7 @@ object DataMessageProcessor {
     if (senderRecipient.isSelf) {
       if (ProfileKeyUtil.getSelfProfileKey() != messageProfileKey) {
         warn(timestamp, "Saw a sync message whose profile key doesn't match our records. Scheduling a storage sync to check.")
-        StorageSyncHelper.scheduleSyncForDataChange()
+        AppDependencies.jobManager.add(StorageSyncJob.forRemoteChange())
       }
     } else if (messageProfileKey != null) {
       if (messageProfileKeyBytes.contentEquals(senderRecipient.profileKey)) {
@@ -253,7 +254,7 @@ object DataMessageProcessor {
       if (SignalDatabase.recipients.setProfileKey(senderRecipient.id, messageProfileKey)) {
         log(timestamp, "Profile key on message from " + senderRecipient.id + " didn't match our local store. It has been updated.")
         SignalDatabase.runPostSuccessfulTransaction {
-          RetrieveProfileJob.enqueue(senderRecipient.id)
+          RetrieveProfileJob.enqueue(senderRecipient.id, skipDebounce = true)
         }
       }
     } else {
@@ -442,7 +443,7 @@ object DataMessageProcessor {
           }
 
           parentStoryId = DirectReply(storyId)
-          quoteModel = QuoteModel(sentTimestamp, authorRecipientId, displayText, false, story.slideDeck.asAttachments(), emptyList(), QuoteModel.Type.NORMAL, bodyRanges)
+          quoteModel = QuoteModel(sentTimestamp, authorRecipientId, displayText, false, story.slideDeck.asAttachments().firstOrNull(), emptyList(), QuoteModel.Type.NORMAL, bodyRanges)
           expiresIn = message.expireTimerDuration
         } else {
           warn(envelope.timestamp!!, "Story has reactions disabled. Dropping reaction.")
@@ -768,7 +769,7 @@ object DataMessageProcessor {
             bodyRanges = story.messageRanges
           }
 
-          quoteModel = QuoteModel(sentTimestamp, storyAuthorRecipientId, displayText, false, story.slideDeck.asAttachments(), emptyList(), QuoteModel.Type.NORMAL, bodyRanges)
+          quoteModel = QuoteModel(sentTimestamp, storyAuthorRecipientId, displayText, false, story.slideDeck.asAttachments().firstOrNull(), emptyList(), QuoteModel.Type.NORMAL, bodyRanges)
           expiresInMillis = message.expireTimerDuration
         } else {
           warn(envelope.timestamp!!, "Story has replies disabled. Dropping reply.")
@@ -897,7 +898,7 @@ object DataMessageProcessor {
 
     SignalDatabase.messages.beginTransaction()
     try {
-      val quote: QuoteModel? = getValidatedQuote(context, envelope.timestamp!!, message, senderRecipient, threadRecipient)
+      val quoteModel: QuoteModel? = getValidatedQuote(context, envelope.timestamp!!, message, senderRecipient, threadRecipient)
       val contacts: List<Contact> = getContacts(message)
       val linkPreviews: List<LinkPreview> = getLinkPreviews(message.preview, message.body ?: "", false)
       val mentions: List<Mention> = getMentions(message.bodyRanges.take(BODY_RANGE_PROCESSING_LIMIT))
@@ -919,7 +920,7 @@ object DataMessageProcessor {
         body = message.body?.ifEmpty { null },
         groupId = groupId,
         attachments = attachments + if (sticker != null) listOf(sticker) else emptyList(),
-        quote = quote,
+        quote = quoteModel,
         sharedContacts = contacts,
         linkPreviews = linkPreviews,
         mentions = mentions,
@@ -1091,24 +1092,31 @@ object DataMessageProcessor {
     if (quotedMessage != null && isSenderValid(quotedMessage, timestamp, senderRecipient, threadRecipient) && !quotedMessage.isRemoteDelete) {
       log(timestamp, "Found matching message record...")
 
-      val attachments: MutableList<Attachment> = mutableListOf()
-      val mentions: MutableList<Mention> = mutableListOf()
+      var thumbnailAttachment: Attachment? = null
+      val targetMessageAttachments = SignalDatabase.attachments.getAttachmentsForMessage(quotedMessage.id)
+      val mentions: List<Mention> = SignalDatabase.mentions.getMentionsForMessage(quotedMessage.id)
 
-      quotedMessage = quotedMessage.withAttachments(SignalDatabase.attachments.getAttachmentsForMessage(quotedMessage.id))
-
-      mentions.addAll(SignalDatabase.mentions.getMentionsForMessage(quotedMessage.id))
+      // We want our thumbnail attachment to be the first "thumbnailable" item from the target message.
+      // That means we want to pick the earliest image/video that has data.
+      thumbnailAttachment = targetMessageAttachments
+        .sortedBy { it.displayOrder }
+        .sortedBy {
+          if (MediaUtil.isImageType(it.contentType) || MediaUtil.isVideoType(it.contentType)) {
+            0
+          } else {
+            1
+          }
+        }
+        .firstOrNull { it.hasData }
 
       if (quotedMessage.isViewOnce) {
-        attachments.add(TombstoneAttachment(MediaUtil.VIEW_ONCE, true))
-      } else {
-        attachments += quotedMessage.slideDeck.asAttachments()
-
-        if (attachments.isEmpty()) {
-          attachments += quotedMessage
-            .linkPreviews
-            .filter { it.thumbnail.isPresent }
-            .map { it.thumbnail.get() }
-        }
+        thumbnailAttachment = TombstoneAttachment.forQuote()
+      } else if (thumbnailAttachment == null) {
+        thumbnailAttachment = quotedMessage
+          .linkPreviews
+          .filter { it.thumbnail.isPresent }
+          .map { it.thumbnail.get() }
+          .firstOrNull()
       }
 
       if (quotedMessage.isPaymentNotification) {
@@ -1118,14 +1126,14 @@ object DataMessageProcessor {
       val body = if (quotedMessage.isPaymentNotification) quotedMessage.getDisplayBody(context).toString() else quotedMessage.body
 
       return QuoteModel(
-        quote.id!!,
-        authorId,
-        body,
-        false,
-        attachments,
-        mentions,
-        QuoteModel.Type.fromProto(quote.type),
-        quotedMessage.messageRanges
+        id = quote.id!!,
+        author = authorId,
+        text = body,
+        isOriginalMissing = false,
+        attachment = thumbnailAttachment,
+        mentions = mentions,
+        type = QuoteModel.Type.fromProto(quote.type),
+        bodyRanges = quotedMessage.messageRanges
       )
     } else if (quotedMessage != null && quotedMessage.isRemoteDelete) {
       warn(timestamp, "Found the target for the quote, but it's flagged as remotely deleted.")
@@ -1133,14 +1141,14 @@ object DataMessageProcessor {
 
     warn(timestamp, "Didn't find matching message record...")
     return QuoteModel(
-      quote.id!!,
-      authorId,
-      quote.text ?: "",
-      true,
-      quote.attachments.mapNotNull { PointerAttachment.forPointer(it).orNull() },
-      getMentions(quote.bodyRanges),
-      QuoteModel.Type.fromProto(quote.type),
-      quote.bodyRanges.filter { it.mentionAci == null }.toBodyRangeList()
+      id = quote.id!!,
+      author = authorId,
+      text = quote.text ?: "",
+      isOriginalMissing = true,
+      attachment = quote.attachments.firstNotNullOfOrNull { PointerAttachment.forPointer(it).orNull() },
+      mentions = getMentions(quote.bodyRanges),
+      type = QuoteModel.Type.fromProto(quote.type),
+      bodyRanges = quote.bodyRanges.filter { it.mentionAci == null }.toBodyRangeList()
     )
   }
 
@@ -1208,25 +1216,7 @@ object DataMessageProcessor {
     val stickerRecord: StickerRecord? = SignalDatabase.stickers.getSticker(stickerLocator.packId, stickerLocator.stickerId, false)
 
     return if (stickerRecord != null) {
-      UriAttachment(
-        stickerRecord.uri,
-        stickerRecord.contentType,
-        AttachmentTable.TRANSFER_PROGRESS_DONE,
-        stickerRecord.size,
-        StickerSlide.WIDTH,
-        StickerSlide.HEIGHT,
-        null,
-        SecureRandom().nextLong().toString(),
-        false,
-        false,
-        false,
-        false,
-        null,
-        stickerLocator,
-        null,
-        null,
-        null
-      )
+      LocalStickerAttachment(stickerRecord, stickerLocator)
     } else {
       sticker.data_!!.toPointer(stickerLocator)
     }

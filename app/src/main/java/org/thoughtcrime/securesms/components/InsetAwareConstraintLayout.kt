@@ -1,10 +1,8 @@
 package org.thoughtcrime.securesms.components
 
 import android.content.Context
-import android.os.Build
 import android.util.AttributeSet
-import android.util.DisplayMetrics
-import android.view.Surface
+import android.view.View
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.Guideline
 import androidx.core.content.withStyledAttributes
@@ -15,8 +13,8 @@ import androidx.core.view.WindowInsetsCompat
 import org.signal.core.util.logging.Log
 import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.keyvalue.SignalStore
-import org.thoughtcrime.securesms.util.ServiceUtil
 import org.thoughtcrime.securesms.util.ViewUtil
+import org.thoughtcrime.securesms.window.WindowSizeClass.Companion.getWindowSizeClass
 
 /**
  * A specialized [ConstraintLayout] that sets guidelines based on the window insets provided
@@ -60,25 +58,72 @@ open class InsetAwareConstraintLayout @JvmOverloads constructor(
   private val windowInsetsListeners: MutableSet<WindowInsetsListener> = mutableSetOf()
   private val keyboardStateListeners: MutableSet<KeyboardStateListener> = mutableSetOf()
   private val keyboardAnimator = KeyboardInsetAnimator()
-  private val displayMetrics = DisplayMetrics()
   private var overridingKeyboard: Boolean = false
   private var previousKeyboardHeight: Int = 0
+  private var applyRootInsets: Boolean = false
+
+  private var insets: WindowInsetsCompat? = null
+  private var windowTypes: Int = InsetAwareConstraintLayout.windowTypes
+
+  private val windowInsetsListener = androidx.core.view.OnApplyWindowInsetsListener { _, insets ->
+    this.insets = insets
+    applyInsets(windowInsets = insets.getInsets(windowTypes), keyboardInsets = insets.getInsets(keyboardType))
+    insets
+  }
 
   val isKeyboardShowing: Boolean
     get() = previousKeyboardHeight > 0
 
-  init {
-    ViewCompat.setOnApplyWindowInsetsListener(this) { _, windowInsetsCompat ->
-      applyInsets(windowInsets = windowInsetsCompat.getInsets(windowTypes), keyboardInsets = windowInsetsCompat.getInsets(keyboardType))
-      windowInsetsCompat
-    }
+  override fun onAttachedToWindow() {
+    super.onAttachedToWindow()
 
+    ViewCompat.setOnApplyWindowInsetsListener(insetTarget(), windowInsetsListener)
+  }
+
+  override fun onDetachedFromWindow() {
+    super.onDetachedFromWindow()
+
+    ViewCompat.setOnApplyWindowInsetsListener(insetTarget(), null)
+  }
+
+  init {
     if (attrs != null) {
       context.withStyledAttributes(attrs, R.styleable.InsetAwareConstraintLayout) {
+        applyRootInsets = getBoolean(R.styleable.InsetAwareConstraintLayout_applyRootInsets, false)
+
         if (getBoolean(R.styleable.InsetAwareConstraintLayout_animateKeyboardChanges, false)) {
-          ViewCompat.setWindowInsetsAnimationCallback(this@InsetAwareConstraintLayout, keyboardAnimator)
+          ViewCompat.setWindowInsetsAnimationCallback(insetTarget(), keyboardAnimator)
         }
       }
+    }
+  }
+
+  private fun insetTarget(): View = if (applyRootInsets) rootView else this
+
+  fun setApplyRootInsets(useRootInsets: Boolean) {
+    if (applyRootInsets == useRootInsets) {
+      return
+    }
+
+    ViewCompat.setOnApplyWindowInsetsListener(insetTarget(), null)
+    applyRootInsets = useRootInsets
+    ViewCompat.setOnApplyWindowInsetsListener(insetTarget(), windowInsetsListener)
+  }
+
+  /**
+   * Specifies whether or not window insets should be accounted for when applying
+   * insets. This is useful when choosing whether to display the content in this
+   * constraint layout as a full-window view or as a framed view.
+   */
+  fun setUseWindowTypes(useWindowTypes: Boolean) {
+    windowTypes = if (useWindowTypes) {
+      InsetAwareConstraintLayout.windowTypes
+    } else {
+      0
+    }
+
+    if (insets != null) {
+      applyInsets(insets!!.getInsets(windowTypes), insets!!.getInsets(keyboardType))
     }
   }
 
@@ -115,10 +160,12 @@ open class InsetAwareConstraintLayout @JvmOverloads constructor(
 
     if (keyboardInsets.bottom > 0) {
       setKeyboardHeight(keyboardInsets.bottom)
-      if (!keyboardAnimator.animating) {
-        keyboardGuideline?.setGuidelineEnd(keyboardInsets.bottom)
-      } else {
-        keyboardAnimator.endingGuidelineEnd = keyboardInsets.bottom
+      if (!overridingKeyboard) {
+        if (!keyboardAnimator.animating) {
+          keyboardGuideline?.setGuidelineEnd(keyboardInsets.bottom)
+        } else {
+          keyboardAnimator.endingGuidelineEnd = keyboardInsets.bottom
+        }
       }
     } else if (!overridingKeyboard) {
       if (!keyboardAnimator.animating) {
@@ -153,6 +200,7 @@ open class InsetAwareConstraintLayout @JvmOverloads constructor(
   protected fun resetKeyboardGuideline() {
     clearKeyboardGuidelineOverride()
     keyboardGuideline?.setGuidelineEnd(navigationBarGuideline.guidelineEnd)
+    keyboardAnimator.endingGuidelineEnd = navigationBarGuideline.guidelineEnd
   }
 
   private fun getKeyboardHeight(): Int {
@@ -180,23 +228,7 @@ open class InsetAwareConstraintLayout @JvmOverloads constructor(
   }
 
   private fun isLandscape(): Boolean {
-    val rotation = getDeviceRotation()
-    return rotation == Surface.ROTATION_90
-  }
-
-  @Suppress("DEPRECATION")
-  private fun getDeviceRotation(): Int {
-    if (isInEditMode) {
-      return Surface.ROTATION_0
-    }
-
-    if (Build.VERSION.SDK_INT >= 30) {
-      context.display?.getRealMetrics(displayMetrics)
-    } else {
-      ServiceUtil.getWindowManager(context).defaultDisplay.getRealMetrics(displayMetrics)
-    }
-
-    return if (displayMetrics.widthPixels > displayMetrics.heightPixels) Surface.ROTATION_90 else Surface.ROTATION_0
+    return resources.getWindowSizeClass().isLandscape()
   }
 
   private val Guideline?.guidelineEnd: Int

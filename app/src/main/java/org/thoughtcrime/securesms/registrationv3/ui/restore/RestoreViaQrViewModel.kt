@@ -23,7 +23,7 @@ import org.thoughtcrime.securesms.crypto.IdentityKeyUtil
 import org.thoughtcrime.securesms.dependencies.AppDependencies
 import org.thoughtcrime.securesms.keyvalue.SignalStore
 import org.thoughtcrime.securesms.registration.data.network.RegisterAccountResult
-import org.whispersystems.signalservice.api.registration.ProvisioningSocket
+import org.whispersystems.signalservice.api.provisioning.ProvisioningSocket
 import org.whispersystems.signalservice.internal.crypto.SecondaryProvisioningCipher
 import java.io.Closeable
 
@@ -57,7 +57,7 @@ class RestoreViaQrViewModel : ViewModel() {
         if (isActive) {
           startNewSocket()
           count++
-          Log.d(TAG, "Started next websocket count: $count")
+          Log.d(TAG, "Started next websocket count: $count", true)
         }
       }
     }
@@ -66,7 +66,7 @@ class RestoreViaQrViewModel : ViewModel() {
   fun handleRegistrationFailure(registerAccountResult: RegisterAccountResult) {
     store.update {
       if (it.isRegistering) {
-        Log.w(TAG, "Unable to register [${registerAccountResult::class.simpleName}]", registerAccountResult.getCause())
+        Log.w(TAG, "Unable to register [${registerAccountResult::class.simpleName}]", registerAccountResult.getCause(), true)
         it.copy(
           isRegistering = false,
           provisioningMessage = null,
@@ -121,7 +121,8 @@ class RestoreViaQrViewModel : ViewModel() {
       }
     }
 
-    return ProvisioningSocket.start(
+    return ProvisioningSocket.start<RegistrationProvisionMessage>(
+      mode = ProvisioningSocket.Mode.REREG,
       identityKeyPair = IdentityKeyUtil.generateIdentityKeyPair(),
       configuration = AppDependencies.signalServiceNetworkAccess.getConfiguration(),
       handler = { id, t ->
@@ -139,7 +140,7 @@ class RestoreViaQrViewModel : ViewModel() {
     ) { socket ->
       val url = socket.getProvisioningUrl()
       store.update {
-        Log.d(TAG, "Updating QR code with data from [${socket.id}]")
+        Log.d(TAG, "Updating QR code with data from [${socket.id}]", true)
 
         it.copy(
           currentSocketId = socket.id,
@@ -152,23 +153,21 @@ class RestoreViaQrViewModel : ViewModel() {
         )
       }
 
-      val result = socket.getRegistrationProvisioningMessage()
+      val result = socket.getProvisioningMessageDecryptResult()
 
-      if (result is SecondaryProvisioningCipher.RegistrationProvisionResult.Success) {
+      if (result is SecondaryProvisioningCipher.ProvisioningDecryptResult.Success) {
         Log.i(TAG, "Saving restore method token: ***${result.message.restoreMethodToken.takeLast(4)}")
         SignalStore.registration.restoreMethodToken = result.message.restoreMethodToken
+        SignalStore.registration.restoreBackupMediaSize = result.message.backupSizeBytes ?: 0
         SignalStore.registration.isOtherDeviceAndroid = result.message.platform == RegistrationProvisionMessage.Platform.ANDROID
-        if (result.message.backupTimestampMs > 0) {
-          SignalStore.backup.backupTier = result.message.tier.let {
-            when (it) {
-              RegistrationProvisionMessage.Tier.FREE -> MessageBackupTier.FREE
-              RegistrationProvisionMessage.Tier.PAID -> MessageBackupTier.PAID
-              null -> null
-            }
-          }
-          SignalStore.backup.lastBackupTime = result.message.backupTimestampMs
-          SignalStore.backup.usedBackupMediaSpace = result.message.backupSizeBytes
+
+        SignalStore.backup.lastBackupTime = result.message.backupTimestampMs ?: 0
+        SignalStore.backup.backupTier = when (result.message.tier) {
+          RegistrationProvisionMessage.Tier.FREE -> MessageBackupTier.FREE
+          RegistrationProvisionMessage.Tier.PAID -> MessageBackupTier.PAID
+          null -> null
         }
+
         store.update { it.copy(isRegistering = true, provisioningMessage = result.message, qrState = QrState.Scanned) }
         shutdown()
       } else {

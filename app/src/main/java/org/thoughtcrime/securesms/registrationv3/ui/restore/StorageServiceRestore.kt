@@ -41,7 +41,7 @@ object StorageServiceRestore {
 
       AppDependencies
         .jobManager
-        .startChain(StorageSyncJob())
+        .startChain(StorageSyncJob.forAccountRestore())
         .then(ReclaimUsernameAndLinkJob())
         .enqueueBlocking(10.seconds)
       stopwatch.split("storage-sync-restore")
@@ -50,8 +50,8 @@ object StorageServiceRestore {
 
       val isMissingProfileData = RegistrationRepository.isMissingProfileData()
 
+      RegistrationUtil.maybeMarkRegistrationComplete()
       if (!isMissingProfileData) {
-        RegistrationUtil.maybeMarkRegistrationComplete()
         AppDependencies.jobManager.add(ProfileUploadJob())
       }
     }
